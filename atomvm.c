@@ -61,10 +61,8 @@
 
 #include "atomvm.h"
 #include <string.h>
+#include <windows.h>
 
-
-volatile uint32_t               g_atomvm_counter = 0 ;
-HANDLE                          g_atomvm_event = 0 ;
 
 
 #define CONTEXT_VM                                          (CONTEXT_INTEGER | CONTEXT_CONTROL | CONTEXT_SEGMENTS)
@@ -119,6 +117,18 @@ typedef struct ATOMVM_CALLBACK_CONTEXT_SWITCH_S {
     volatile PATOMVM_CONTEXT        p_new_context ;
 
 } ATOMVM_CALLBACK_CONTEXT_SWITCH, *PATOMVM_CALLBACK_CONTEXT_SWITCH ;
+
+/* ATOMVM_CALLBACK_IPI is the parameter for a ATOMVM_CALLBACK_F call
+that take as parameter a pointer to a ipi target and the isr to call */
+typedef struct ATOMVM_CALLBACK_IPI_S {
+
+    ATOMVM_CALLBACK                 callback ;
+
+    /* Parameters the callback function will operate on */
+    volatile uint32_t        target ;
+    volatile uint32_t        isr ;
+
+} ATOMVM_CALLBACK_IPI, *PATOMVM_CALLBACK_IPI ;
 
 typedef struct ATOMVM_PERF_COUNTERS_S {
 
@@ -183,12 +193,18 @@ typedef struct ATOMVM_S {
     (workaround to not check everytime if the first context
     was already started) */
     ATOMVM_CONTEXT                  atom_init_context ;
-//    ATOMVM_CONTEXT                  atom_wait_context ;
 
     /* Performance counters */
     volatile ATOMVM_PERF_COUNTERS   perf_counters ;
 
 } ATOMVM, *PATOMVM ;
+
+
+/* Global declarations */
+volatile uint32_t               g_atomvm_counter = 0 ;
+HANDLE                          g_atomvm_event = 0 ;
+DWORD                           g_atomvm_tls_idx ;
+PATOMVM                         g_vms[ATOMVM_MAX_VM] ;
 
 
 /* Forward declaration for the atom virtual machine thread */
@@ -213,56 +229,44 @@ static DWORD WINAPI                 vm_thread (LPVOID lpParameter) ;
 uint32_t
 atomvmCtrlInit (HATOMVM *atomvm)
 {
-    PATOMVM patomvm = (PATOMVM) malloc (sizeof(struct ATOMVM_S)) ;
+    PATOMVM patomvm = 0 ;
+    int32_t i ;
 
-    if (patomvm) {
+    if (g_atomvm_counter < ATOMVM_MAX_VM) {
 
-        memset (patomvm, 0, sizeof(struct ATOMVM_S)) ;
+        patomvm = (PATOMVM) malloc (sizeof(struct ATOMVM_S)) ;
 
-        patomvm->atomvm_id = InterlockedIncrement(&g_atomvm_counter) - 1 ;
+        if (patomvm) {
 
-        if (patomvm->atomvm_id == 0) {
-            g_atomvm_event = CreateEvent (NULL, FALSE, FALSE, 0) ;
+            memset (patomvm, 0, sizeof(struct ATOMVM_S)) ;
+
+            patomvm->atomvm_id = InterlockedIncrement(&g_atomvm_counter) - 1 ;
+
+            if (patomvm->atomvm_id == 0) {
+                g_atomvm_event = CreateEvent (NULL, FALSE, FALSE, 0) ;
+                g_atomvm_tls_idx = TlsAlloc () ;
+                for (i=0; i<ATOMVM_MAX_VM; i++) {
+                    g_vms[i] = 0 ;
+                }
+            }
+            g_vms[patomvm->atomvm_id] = patomvm ;
+
+            patomvm->atomvm_call = CreateEvent (NULL, TRUE, FALSE, 0) ;
+            patomvm->atomvm_int = CreateEvent (NULL, TRUE, FALSE, 0) ;
+            patomvm->atomvm_int_complete = CreateEvent (NULL, FALSE, TRUE, 0) ;
+            patomvm->atomvm_close = CreateEvent (NULL, TRUE, FALSE, 0) ;
+
+            patomvm->vm_thread = CreateThread (NULL, 0, vm_thread, (void*)patomvm, CREATE_SUSPENDED, NULL) ;
+
+            patomvm->atom_init_context.critical_count = 1 ;
+            patomvm->current_context = &patomvm->atom_init_context ;
+
+            *atomvm = (HATOMVM)patomvm ;
+
         }
-
-        patomvm->atomvm_call = CreateEvent (NULL, TRUE, FALSE, 0) ;
-        patomvm->atomvm_int = CreateEvent (NULL, TRUE, FALSE, 0) ;
-        patomvm->atomvm_int_complete = CreateEvent (NULL, FALSE, TRUE, 0) ;
-        patomvm->atomvm_close = CreateEvent (NULL, TRUE, FALSE, 0) ;
-
-        patomvm->vm_thread = CreateThread (NULL, 0, vm_thread, 0, CREATE_SUSPENDED, NULL) ;
-
-        patomvm->atom_init_context.critical_count = 1 ;
-        patomvm->current_context = &patomvm->atom_init_context ;
-
-        *atomvm = (HATOMVM)patomvm ;
-
     }
 
     return patomvm != 0 ;
-}
-
-/**
-* \ingroup atomvm
-* \b atomvmCtrlGetId
-*
-* This is an atomvm controll function used by a controlling thread
-* and must not be called from the atom virtual machine.
-*
-* Returns an identifier for the virtual machine. This is zero for the first 
-* virtual machine created with atomvmCtrlInit(), 1 for the second and so on.
-*
-*
-* @param[out] atomvm Handle to the virtual machine created.
-*
-* @return The atom vm ID
-*/
-uint32_t
-atomvmCtrlGetId (HATOMVM *atomvm)
-{
-    PATOMVM patomvm = (PATOMVM) malloc (sizeof(struct ATOMVM_S)) ;
-
-    return patomvm->atomvm_id ;
 }
 
 
@@ -291,6 +295,13 @@ atomvmCtrlRun (HATOMVM atomvm, uint32_t flags)
     uint32_t            res ;
     uint32_t            wait_object ;
     PATOMVM_CALLBACK    service_call ;
+#if defined DEBUG || defined _DEBUG
+    BOOL                tls_res = 
+#endif
+        TlsSetValue (g_atomvm_tls_idx, (void*) atomvm) ;
+
+
+    ATOMVM_ASSERT(tls_res, _T("TlsSetValue failed")) ;
 
     ResumeThread (patomvm->vm_thread) ;
 
@@ -322,10 +333,8 @@ atomvmCtrlRun (HATOMVM atomvm, uint32_t flags)
             InterlockedExchange (&service_call->result, service_call->callback (patomvm, service_call)) ;
             InterlockedExchange (&service_call->lock, 0) ;
             ResetEvent (patomvm->atomvm_call) ;
-//            if (patomvm->current_context != &patomvm->atom_wait_context) {
-                res = ResumeThread (patomvm->vm_thread) ;
-                ATOMVM_ASSERT(res == 1 , _T("ResumeThread failed")) ;
-//            }
+            res = ResumeThread (patomvm->vm_thread) ;
+            ATOMVM_ASSERT(res == 1 , _T("ResumeThread failed")) ;
             
 
         }
@@ -334,10 +343,8 @@ atomvmCtrlRun (HATOMVM atomvm, uint32_t flags)
 
             if (patomvm->current_context->critical_count == 0) {
 
-//                if (patomvm->current_context != &patomvm->atom_wait_context) {
-                    while ((res = SuspendThread (patomvm->vm_thread)) == (DWORD)-1) ;
-                    ATOMVM_ASSERT(res == 0 , _T("SuspendThread failed")) ;
-//                }
+                while ((res = SuspendThread (patomvm->vm_thread)) == (DWORD)-1) ;
+                ATOMVM_ASSERT(res == 0 , _T("SuspendThread failed")) ;
 #if (_WIN32_WINNT >= 0x0600)
                 /*
                     This is used for multi processor machines to ensure the thread
@@ -352,10 +359,8 @@ atomvmCtrlRun (HATOMVM atomvm, uint32_t flags)
                     patomvm->isr () ;
                     patomvm->status_isr-- ;
 
-//                    if (patomvm->current_context != &patomvm->atom_wait_context) {
-                        res = ResumeThread (patomvm->vm_thread) ;
-                        ATOMVM_ASSERT(res == 1 , _T("ResumeThread failed")) ;
-//                    }
+                    res = ResumeThread (patomvm->vm_thread) ;
+                    ATOMVM_ASSERT(res == 1 , _T("ResumeThread failed")) ;
                     
                     InterlockedExchange ((volatile uint32_t*)&patomvm->isr, 0) ;
                     ResetEvent (patomvm->atomvm_int) ;	
@@ -422,6 +427,8 @@ atomvmCtrlClose (HATOMVM atomvm)
     CloseHandle (patomvm->atomvm_close) ;
     CloseHandle (patomvm->vm_thread) ;
 
+    TlsFree (g_atomvm_tls_idx) ;
+
     free (atomvm) ;
 }
 
@@ -468,6 +475,23 @@ invokeCallback (PATOMVM patomvm, ATOMVM_CALLBACK_F callback, PATOMVM_CALLBACK se
 }
 
 
+/*
+* \b getAtomvm
+*
+* Get the atomvm instance for the calling thredd
+*
+* @return atomvm instance
+*/
+__inline PATOMVM
+getAtomvm ()
+{
+    PATOMVM patomvm = (PATOMVM) TlsGetValue (g_atomvm_tls_idx) ;
+    
+    ATOMVM_ASSERT(patomvm , _T("TlsGetValue failed")) ;
+
+    return patomvm ;
+
+}
 /**
 * \ingroup atomvm
 * \b atomvmExitCritical
@@ -478,14 +502,12 @@ invokeCallback (PATOMVM patomvm, ATOMVM_CALLBACK_F callback, PATOMVM_CALLBACK se
 * When the critical count reaches zero, interrupts will be enabled again. Calling
 * this function from inside an isr has no effect.
 *
-* @param[in] atomvm Handle to the virtual machine created by atomvmCtrlInit.
-*
 * @return Critical count before this function was called.
 */
 int32_t
-atomvmExitCritical (HATOMVM atomvm)
+atomvmExitCritical ()
 {
-    PATOMVM         patomvm = (PATOMVM) atomvm ;
+    PATOMVM         patomvm = getAtomvm () ;
     int32_t         count = 0;
 
     if (patomvm->status_isr == 0) {
@@ -508,14 +530,13 @@ atomvmExitCritical (HATOMVM atomvm)
 *
 * All threads are created with a critical count of 1.
 *
-* @param[in] atomvm Handle to the virtual machine created by atomvmCtrlInit.
 *
 * @return Critical count before this function was called.
 */
 int32_t
-atomvmEnterCritical (HATOMVM atomvm)
+atomvmEnterCritical ()
 {
-    PATOMVM         patomvm = (PATOMVM) atomvm ;
+    PATOMVM         patomvm = getAtomvm () ;
     int32_t         count = 0 ;
 
     if (patomvm->status_isr == 0) {
@@ -590,7 +611,6 @@ callbackContextCreate (PATOMVM patomvm, PATOMVM_CALLBACK callback)
 * This function creates a atomvm thread context that can be scheduled
 * by atomvmContextSwitch.
 *
-* @param[in] atomvm Handle to the virtual machine created by atomvmCtrlInit.
 * @param[out] context Handle to the context of the thread that are allocated
 * by the caller.
 * @param[in] stack Stack top.
@@ -599,10 +619,10 @@ callbackContextCreate (PATOMVM patomvm, PATOMVM_CALLBACK callback)
 * @return Zero on failure, try to call GetLastError().
 */
 uint32_t
-atomvmContextCreate (HATOMVM atomvm, HATOMVM_CONTEXT* atomvm_context, uint32_t stack, uint32_t entry)
+atomvmContextCreate (HATOMVM_CONTEXT* atomvm_context, uint32_t stack, uint32_t entry)
 {
     uint32_t            res ;
-    PATOMVM             patomvm = (PATOMVM) atomvm ;
+    PATOMVM             patomvm = getAtomvm () ;
     PATOMVM_CONTEXT     new_context = (PATOMVM_CONTEXT)malloc (sizeof(ATOMVM_CONTEXT)) ;
     CONTEXT*            pcontext = &new_context->context ;
     ATOMVM_CALLBACK_CONTEXT     context_init ;
@@ -668,15 +688,14 @@ callbackContextSwitch (PATOMVM patomvm, PATOMVM_CALLBACK callback)
 *
 * This function schedules a thread for the context created by atomvmContextCreate.
 *
-* @param[in] atomvm Handle to the virtual machine created by atomvmCtrlInit.
 * @param[in] new_context The context to schedule.
 *
 * @return Zero on failure, try to call GetLastError().
 */
 uint32_t
-atomvmContextSwitch  (HATOMVM atomvm, HATOMVM_CONTEXT old_context, HATOMVM_CONTEXT new_context)
+atomvmContextSwitch  (HATOMVM_CONTEXT old_context, HATOMVM_CONTEXT new_context)
 {
-    PATOMVM                     patomvm = (PATOMVM) atomvm ;
+    PATOMVM                     patomvm = getAtomvm () ;
     ATOMVM_CALLBACK_CONTEXT_SWITCH     context_switch ;
 
     context_switch.p_old_context = (PATOMVM_CONTEXT) old_context ;
@@ -693,15 +712,14 @@ atomvmContextSwitch  (HATOMVM atomvm, HATOMVM_CONTEXT old_context, HATOMVM_CONTE
 *
 * This functiondestroyes a atomvm context created by atomvmContextCreate.
 *
-* @param[in] atomvm Handle to the virtual machine created by atomvmCtrlInit.
 * @param[in] context The context to destroy.
 *
 * @return None
 */
 void
-atomvmContextDesrtroy  (HATOMVM atomvm, HATOMVM_CONTEXT context)
+atomvmContextDesrtroy  (HATOMVM_CONTEXT context)
 {
-    PATOMVM     patomvm = (PATOMVM) atomvm ;
+    PATOMVM     patomvm = getAtomvm () ;
 
     ATOMVM_ASSERT(patomvm->current_context !=  (PATOMVM_CONTEXT)context,
     			_T("atomvmContextDesrtroy failed")) ;
@@ -709,6 +727,22 @@ atomvmContextDesrtroy  (HATOMVM atomvm, HATOMVM_CONTEXT context)
     free((void*)context) ;
 }
 
+/**
+* \ingroup atomvm
+* \b atomvmGetId
+*
+* Returns an identifier for the virtual machine. This is zero for the first 
+* virtual machine created with atomvmCtrlInit(), 1 for the second and so on.
+*
+* @return The atom vm ID
+*/
+uint32_t
+atomvmGetId ()
+{
+    PATOMVM patomvm =  getAtomvm () ;
+
+    return patomvm->atomvm_id ;
+}
 /**
 * \b callbackEventWait
 *
@@ -738,14 +772,13 @@ callbackEventWait (PATOMVM patomvm, PATOMVM_CALLBACK callback)
 * This function if for synchronization between multiple
 * atom vms.
 *
-* @param[in] atomvm Handle to the virtual machine created by atomvmCtrlInit.
 *
 * @return void.
 */
 void
-atomvmEventWait  (HATOMVM atomvm)
+atomvmEventWait  ()
 {
-    PATOMVM                     patomvm = (PATOMVM) atomvm ;
+    PATOMVM                     patomvm = getAtomvm () ;
     ATOMVM_CALLBACK             callback ;
 
     invokeCallback (patomvm, callbackEventWait, (PATOMVM_CALLBACK)&callback) ;
@@ -778,18 +811,117 @@ callbackEventSend (PATOMVM patomvm, PATOMVM_CALLBACK callback)
 * This function if for synchronization between multiple
 * atom vms.
 *
-* @param[in] atomvm Handle to the virtual machine created by atomvmCtrlInit.
 *
 * @return void.
 */
 void
-atomvmEventSend  (HATOMVM atomvm)
+atomvmEventSend  ()
 {
-    PATOMVM                     patomvm = (PATOMVM) atomvm ;
+    PATOMVM                     patomvm = getAtomvm () ;
     ATOMVM_CALLBACK             callback ;
 
     invokeCallback (patomvm, callbackEventSend, (PATOMVM_CALLBACK)&callback) ;
 }
+
+/**
+* \b callbackInterruptWait
+*
+* This function is invoked from the controll thread after a call to atomvmInterruptWait().
+*
+* The atom virtual machine is suspended while this function is called.
+*
+* @param[in] patomvm Pointer to the virtual machine created by atomvmCtrlInit.
+* @param[out] callback Callback parameter.
+*
+* @return Zero on failure, try to call GetLastError().
+*/
+uint32_t
+callbackInterruptWait (PATOMVM patomvm, PATOMVM_CALLBACK callback)
+{
+    return WaitForSingleObject (patomvm->atomvm_int, INFINITE) == WAIT_OBJECT_0 ;
+}
+
+/**
+* \ingroup atomvm
+* \b atomvmInterruptWait
+*
+* This function is to be used by the atom virtual machine.
+*
+* This function if for synchronization between multiple
+* atom vms.
+*
+*
+* @return void.
+*/
+void
+atomvmInterruptWait  ()
+{
+    PATOMVM                     patomvm = getAtomvm () ;
+    ATOMVM_CALLBACK             callback ;
+
+    invokeCallback (patomvm, callbackInterruptWait, (PATOMVM_CALLBACK)&callback) ;
+}
+
+/**
+* \ingroup atomvm
+* \b callbackScheduleIpi
+*
+* This function is invoked from the controll thread after a call to atomvmScheduleIpi().
+*
+* This function if for synchronization between multiple
+* atom vms.
+*
+* @param[in] target Target atomvm ID, less than ATOMVM_MAX_VM
+* @param[in] isr interrupt service routine
+*
+* @return Zero on failure, try to call GetLastError().
+*/
+uint32_t
+callbackScheduleIpi (PATOMVM patomvm, PATOMVM_CALLBACK callback)
+{
+    PATOMVM_CALLBACK_IPI callback_ipi = (PATOMVM_CALLBACK_IPI)callback ;
+    uint32_t res = 0 ;
+
+    if ((callback_ipi->target < ATOMVM_MAX_VM) &&
+        (g_vms[callback_ipi->target] != patomvm) ) {
+
+        atomvmCtrlIntRequest ((HATOMVM)g_vms[callback_ipi->target], callback_ipi->isr) ;
+        res = 1 ;
+
+    }
+
+    return res ;
+}
+
+
+/**
+* \ingroup atomvm
+* \b atomvmScheduleIpi
+*
+* This function is to be used by the atom virtual machine.
+*
+* This function if for synchronization between multiple
+* atom vms.
+*
+* @param[in] target Target atomvm ID
+* @param[in] isr interrupt service routine
+*
+* @return Zero on failure, the vm is not running.
+*/
+uint32_t
+atomvmScheduleIpi (uint32_t target, uintptr_t isr)
+{
+    PATOMVM                     patomvm = getAtomvm () ;
+    ATOMVM_CALLBACK_IPI         callback ;
+
+    callback.target = target ;
+    callback.isr = isr ;
+
+    return invokeCallback (patomvm, callbackScheduleIpi, (PATOMVM_CALLBACK)&callback) ;
+
+
+}
+
 
 /**
 * \b vm_thread
@@ -804,6 +936,9 @@ atomvmEventSend  (HATOMVM atomvm)
 DWORD WINAPI
 vm_thread (LPVOID lpParameter)
 {
+    BOOL res = TlsSetValue (g_atomvm_tls_idx, lpParameter) ;
+
+    ATOMVM_ASSERT(res, _T("TlsSetValue failed")) ;
     __atomvmReset () ;
     return 0 ;
 }
