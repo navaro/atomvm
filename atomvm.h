@@ -60,7 +60,7 @@
 #define __ATOMVM_H__
 
 #include <crtdbg.h>
-#include "atomuser.h"
+#include "types.h"
 
 
 #ifdef _DEBUG
