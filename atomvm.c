@@ -158,6 +158,7 @@ typedef struct ATOMVM_CONTEXT_S {
     and atomvmEnterCritical() will respectively decrement and
     increment the critical count  */
     volatile uint32_t               critical_count ;
+    uint32_t                        thread_id ;
 
 } ATOMVM_CONTEXT, *PATOMVM_CONTEXT ;
 
@@ -362,9 +363,9 @@ atomvmCtrlRun (HATOMVM atomvm, uint32_t flags)
                     res = ResumeThread (patomvm->vm_thread) ;
                     ATOMVM_ASSERT(res == 1 , _T("ResumeThread failed")) ;
                     
+                    ResetEvent (patomvm->atomvm_int) ;
                     InterlockedExchange ((volatile uint32_t*)&patomvm->isr, 0) ;
-                    ResetEvent (patomvm->atomvm_int) ;	
-                    SetEvent (patomvm->atomvm_int_complete) ;	
+                    SetEvent (patomvm->atomvm_int_complete) ;
 
                 } else {
 
@@ -492,6 +493,8 @@ getAtomvm ()
     return patomvm ;
 
 }
+
+
 /**
 * \ingroup atomvm
 * \b atomvmExitCritical
@@ -502,7 +505,7 @@ getAtomvm ()
 * When the critical count reaches zero, interrupts will be enabled again. Calling
 * this function from inside an isr has no effect.
 *
-* @return Critical count before this function was called.
+* @return Critical count before the function call.
 */
 int32_t
 atomvmExitCritical ()
@@ -531,7 +534,7 @@ atomvmExitCritical ()
 * All threads are created with a critical count of 1.
 *
 *
-* @return Critical count before this function was called.
+* @return Critical count before the function call.
 */
 int32_t
 atomvmEnterCritical ()
@@ -549,6 +552,23 @@ atomvmEnterCritical ()
 
 /**
 * \ingroup atomvm
+* \b atomvmCriticalCount
+*
+* Rerurns the critical cont of the current context.
+*
+* @return the critical cont of the current context.
+*/
+int32_t
+atomvmCriticalCount ()
+{
+    PATOMVM         patomvm = getAtomvm () ;
+
+    return patomvm->current_context->critical_count ;
+}
+
+
+/**
+* \ingroup atomvm
 * \b atomvmCtrlIntRequest
 *
 * This is an atomvm controll function used by a controlling thread(s)
@@ -557,7 +577,7 @@ atomvmEnterCritical ()
 * This function requests an interrupt service routine to be called in the
 * context of the atom virtual machine.
 *
-* The call will block untill after the interrupt completes.
+* The call will block while a previously scheduled interrupt is in progress.
 *
 * @param[in] atomvm Handle to the virtual machine created by atomvmCtrlInit.
 * @param[in] isr The address of the interrupt service routine. The routine must use
@@ -570,10 +590,11 @@ atomvmCtrlIntRequest (HATOMVM atomvm, uint32_t isr)
 {
     PATOMVM         patomvm = (PATOMVM) atomvm ;
 
+    WaitForSingleObject (patomvm->atomvm_int_complete, INFINITE) ;
     while (InterlockedCompareExchange ((volatile uint32_t *)&patomvm->isr, isr, 0) == 0) {
 		SwitchToThread() ;
 	}
-    SignalObjectAndWait(patomvm->atomvm_int, patomvm->atomvm_int_complete, INFINITE, FALSE) ;
+    SetEvent (patomvm->atomvm_int) ;
 
 }
 
@@ -729,7 +750,46 @@ atomvmContextDesrtroy  (HATOMVM_CONTEXT context)
 
 /**
 * \ingroup atomvm
-* \b atomvmGetId
+* \b atomvmWriteThreadId
+*
+* Write a thread ID.
+*
+* Write a thread ID for the current context.
+*
+* @param[in] thread_id thread_id.
+*
+* @return None
+*/
+void
+atomvmWriteThreadId  (uint32_t thread_id)
+{
+    PATOMVM     patomvm = getAtomvm () ;
+
+    patomvm->current_context->thread_id = thread_id ;
+}
+
+/**
+* \ingroup atomvm
+* \b atomvmReadThreadId
+*
+* Write a thread ID.
+*
+* Read a thread ID for the current context.
+*
+* @return thread_id
+*/
+uint32_t
+atomvmReadThreadId  ()
+{
+    PATOMVM     patomvm = getAtomvm () ;
+
+    return patomvm->current_context->thread_id ;
+}
+
+
+/**
+* \ingroup atomvm
+* \b atomvmGetVmId
 *
 * Returns an identifier for the virtual machine. This is zero for the first 
 * virtual machine created with atomvmCtrlInit(), 1 for the second and so on.
@@ -737,7 +797,7 @@ atomvmContextDesrtroy  (HATOMVM_CONTEXT context)
 * @return The atom vm ID
 */
 uint32_t
-atomvmGetId ()
+atomvmGetVmId ()
 {
     PATOMVM patomvm =  getAtomvm () ;
 

@@ -92,11 +92,15 @@ extern void             atomvmCtrlClose (HATOMVM atomvm) ;
 /* Function prototypes for use by the atom virtual machine */
 extern int32_t          atomvmExitCritical () ;
 extern int32_t          atomvmEnterCritical () ;
+extern int32_t          atomvmCriticalCount () ;
 extern uint32_t         atomvmContextCreate (HATOMVM_CONTEXT* context, uint32_t stack, uint32_t entry) ;
 extern uint32_t         atomvmContextSwitch (HATOMVM_CONTEXT old_context, HATOMVM_CONTEXT new_context) ;
 extern void             atomvmContextDesrtroy (HATOMVM_CONTEXT context) ;
-
-extern uint32_t         atomvmGetId () ;
+extern void             atomvmWriteThreadId (uint32_t thread_id) ;
+extern uint32_t         atomvmReadThreadId () ;
+/* Function prototypes for use by the atom virtual machine 
+    for synchronization with other running atom virtual machines */
+extern uint32_t         atomvmGetVmId () ;
 extern void             atomvmInterruptWait () ;
 extern void             atomvmEventWait () ;
 extern void             atomvmEventSend () ;
