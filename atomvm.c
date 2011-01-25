@@ -176,6 +176,7 @@ typedef struct ATOMVM_S {
     HANDLE                          atomvm_int ;
     HANDLE                          atomvm_int_complete ;
     HANDLE                          atomvm_close ;
+    HANDLE                          atomvm_event ;
 
     /* next ISR */
     volatile void                   (*isr)(void) ;
@@ -203,8 +204,7 @@ typedef struct ATOMVM_S {
 
 /* Global declarations */
 volatile uint32_t               g_atomvm_counter = 0 ;
-HANDLE                          g_atomvm_event = 0 ;
-DWORD                           g_atomvm_tls_idx ;
+volatile DWORD                           g_atomvm_tls_idx ;
 PATOMVM                         g_vms[ATOMVM_MAX_VM] ;
 
 
@@ -244,7 +244,6 @@ atomvmCtrlInit (HATOMVM *atomvm)
             patomvm->atomvm_id = InterlockedIncrement(&g_atomvm_counter) - 1 ;
 
             if (patomvm->atomvm_id == 0) {
-                g_atomvm_event = CreateEvent (NULL, FALSE, FALSE, 0) ;
                 g_atomvm_tls_idx = TlsAlloc () ;
                 for (i=0; i<ATOMVM_MAX_VM; i++) {
                     g_vms[i] = 0 ;
@@ -256,6 +255,7 @@ atomvmCtrlInit (HATOMVM *atomvm)
             patomvm->atomvm_int = CreateEvent (NULL, TRUE, FALSE, 0) ;
             patomvm->atomvm_int_complete = CreateEvent (NULL, FALSE, TRUE, 0) ;
             patomvm->atomvm_close = CreateEvent (NULL, TRUE, FALSE, 0) ;
+            patomvm->atomvm_event = CreateEvent (NULL, FALSE, FALSE, 0) ;
 
             patomvm->vm_thread = CreateThread (NULL, 0, vm_thread, (void*)patomvm, CREATE_SUSPENDED, NULL) ;
 
@@ -384,6 +384,10 @@ atomvmCtrlRun (HATOMVM atomvm, uint32_t flags)
         } else if (wait_object == WAIT_OBJECT_0 + 2) {
 
             break ;
+
+        } else {
+
+            ATOMVM_ASSERT(res == 1 , _T("WaitForMultipleObjects failed")) ;
 
         }
 
@@ -818,7 +822,7 @@ atomvmGetVmId ()
 uint32_t
 callbackEventWait (PATOMVM patomvm, PATOMVM_CALLBACK callback)
 {
-    return WaitForSingleObject (g_atomvm_event, INFINITE) == WAIT_OBJECT_0 ;
+    return WaitForSingleObject (patomvm->atomvm_event, INFINITE) == WAIT_OBJECT_0 ;
 
 }
 
@@ -859,7 +863,14 @@ atomvmEventWait  ()
 uint32_t
 callbackEventSend (PATOMVM patomvm, PATOMVM_CALLBACK callback)
 {
-    return SetEvent (g_atomvm_event) ;
+    int32_t i ;
+                for (i=0; i<ATOMVM_MAX_VM; i++) {
+                    if (g_vms[i] && (g_vms[i] != patomvm)) {
+                        SetEvent (g_vms[i]->atomvm_event) ;
+                    }
+                }
+
+    return 1 ;
 }
 
 /**
@@ -898,6 +909,7 @@ atomvmEventSend  ()
 uint32_t
 callbackInterruptWait (PATOMVM patomvm, PATOMVM_CALLBACK callback)
 {
+    WaitForSingleObject (patomvm->atomvm_int_complete, INFINITE) ;
     return WaitForSingleObject (patomvm->atomvm_int, INFINITE) == WAIT_OBJECT_0 ;
 }
 
