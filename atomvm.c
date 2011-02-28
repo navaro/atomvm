@@ -595,7 +595,7 @@ atomvmCtrlIntRequest (HATOMVM atomvm, uint32_t isr)
     PATOMVM         patomvm = (PATOMVM) atomvm ;
 
     WaitForSingleObject (patomvm->atomvm_int_complete, INFINITE) ;
-    while (InterlockedCompareExchange ((volatile uint32_t *)&patomvm->isr, isr, 0) == 0) {
+    while (InterlockedCompareExchange ((volatile uint32_t *)&patomvm->isr, isr, 0) != 0) {
 		SwitchToThread() ;
 	}
     SetEvent (patomvm->atomvm_int) ;
