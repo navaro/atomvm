@@ -131,6 +131,21 @@ typedef struct ATOMVM_CALLBACK_INT_REQUEST_S {
 
 } ATOMVM_CALLBACK_INT_REQUEST, *PATOMVM_CALLBACK_INT_REQUEST ;
 
+/* ATOMVM_CALLBACK_SYSCALL_REQUEST is the parameter for a ATOMVM_CALLBACK_F call
+that take as parameter a pointer to to the function that will be called in
+an interrupt context */
+typedef struct ATOMVM_CALLBACK_SYSCALL_REQUEST_S {
+
+    ATOMVM_CALLBACK                 callback ;
+
+    /* Function pointer the callback will call */
+    uint32_t (*syscall) (uint32_t /*param1*/, uint32_t /*param2*/) ;
+    uint32_t    param1 ;
+    uint32_t    param2 ;
+
+} ATOMVM_CALLBACK_SYSCALL_REQUEST, *PATOMVM_CALLBACK_SYSCALL_REQUEST ;
+
+
 /* ATOMVM_CONTEXT saves the state of a context created by
 atomvmContextCreate() and sheduled by atomvmContextSwitch(). */
 typedef struct ATOMVM_CONTEXT_S {
@@ -828,6 +843,48 @@ atomvmIntRequest  (void (*isr) (void))
     
     callback.isr = isr ;
     invokeCallback (patomvm, callbackIntRequest, (PATOMVM_CALLBACK)&callback) ;
+}
+
+/**
+* \b callbackIntRequest
+*
+* This function is invoked from the controll thread after a call to atomvmIntRequest().
+*
+* The atom virtual machine is suspended while this function is called.
+*
+* @param[in] patomvm Pointer to the virtual machine created by atomvmCtrlCreate.
+* @param[in] callback Callback parameter.
+*
+* @return Zero on failure, try to call GetLastError().
+*/
+uint32_t
+callbackSyscallRequest (PATOMVM patomvm, PATOMVM_CALLBACK callback)
+{
+    PATOMVM_CALLBACK_SYSCALL_REQUEST    syscall = (PATOMVM_CALLBACK_SYSCALL_REQUEST)callback ;
+
+    return syscall->syscall (syscall->param1, syscall->param2) ;
+}
+
+/**
+* \ingroup atomvm
+* \b atomvmSyscallRequest
+*
+* This function is to be used by the atom virtual machine.
+*
+* @param[in] isr Function that will be called from the controll thread.
+*
+* @return void.
+*/
+uint32_t
+atomvmSyscallRequest  (uint32_t (*syscall) (uint32_t, uint32_t), uint32_t param1, uint32_t param2)
+{
+    PATOMVM                         patomvm = getAtomvm () ;
+    ATOMVM_CALLBACK_SYSCALL_REQUEST     callback ;
+    
+    callback.syscall = syscall ;
+    callback.param1 = param1 ;
+    callback.param2 = param2 ;
+    return invokeCallback (patomvm, callbackSyscallRequest, (PATOMVM_CALLBACK)&callback) ;
 }
 
 

@@ -95,6 +95,7 @@ extern void             atomvmWriteThreadId (uint32_t thread_id) ;
 extern uint32_t         atomvmReadThreadId (void) ;
 extern void             atomvmIntWait (void) ;
 extern void             atomvmIntRequest (void (*isr) (void)) ;
+extern uint32_t         atomvmSyscallRequest  (uint32_t (*syscall) (uint32_t, uint32_t), uint32_t param1, uint32_t param2) ;
 extern uint32_t         atomvmGetVmId (void) ;
 
 
