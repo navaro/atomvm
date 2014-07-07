@@ -13,6 +13,11 @@ static HATOMVM_CONTEXT  _hatomvm_context_main ;
 void sysTickVector (uint32_t vect)
 {
     _sys_ticks++ ;
+    if (_sys_ticks == 500) {
+        /* switch back to main context */
+        atomvmContextSwitch (_hatomvm_context_thread, _hatomvm_context_main) ;
+    }
+
 }
 
 /*
@@ -38,10 +43,6 @@ static void Thread(uint32_t arg)
             logged = 0 ;
         }
 
-        if (_sys_ticks > 500) {
-            /* switch back to main context */
-            atomvmContextSwitch (_hatomvm_context_thread, _hatomvm_context_main) ;
-        }
     }
 
     return ;
