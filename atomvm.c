@@ -14,7 +14,7 @@
 *    Atomthreads project may be used to endorse or promote products
 *    derived from this software without specific prior written permission.
 *
-* THIS SOFTWARE IS PROVIDED BY THE ATOMTHREADS PROJECT AND CONTRIBUTORS
+* THIS SOFTWARE IS PROVIDED BY THE ATOMVM PROJECT AND CONTRIBUTORS
 * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
 * TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
 * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE PROJECT OR CONTRIBUTORS BE
@@ -178,9 +178,10 @@ typedef struct ATOMVM_S {
     HANDLE                          atomvm_close ;
 
     /* next ISR */
-    volatile void                   (*isr)(void) ;
+    volatile void                   (*isr)(uint32_t /*vect*/) ;
+    volatile uint32_t               isr_vect ;
     /* True if in an ISR */
-    volatile uint32_t               status_isr ;
+    volatile uint32_t               isr_status ;
 
     /* The current context that was scheduled by a call
     to atomvmContextSwitch() */
@@ -334,9 +335,9 @@ atomvmCtrlRun (HATOMVM atomvm, uint32_t flags)
 #endif
                 if (patomvm->current_context->interrupt_mask == 0) {
 
-                    patomvm->status_isr++ ;
-                    patomvm->isr () ;
-                    patomvm->status_isr-- ;
+                    patomvm->isr_status++ ;
+                    patomvm->isr (patomvm->isr_vect) ;
+                    patomvm->isr_status-- ;
 
                     res = ResumeThread (patomvm->vm_thread) ;
                     ATOMVM_ASSERT(res == 1 , _T("ResumeThread failed")) ;
@@ -437,7 +438,7 @@ invokeCallback (PATOMVM patomvm, ATOMVM_CALLBACK_F callback, PATOMVM_CALLBACK se
 {
     uint32_t res ;
 
-    if (patomvm->status_isr == 0) {
+    if (patomvm->isr_status == 0) {
 
         service_call->lock = 0 ;
         service_call->callback = callback ;
@@ -493,7 +494,7 @@ atomvmInterruptMask (uint32_t mask)
     PATOMVM         patomvm = getAtomvm () ;
     int32_t         interrupts = 0;
 
-    if (patomvm->status_isr == 0) {
+    if (patomvm->isr_status == 0) {
         interrupts = InterlockedExchange (&patomvm->current_context->interrupt_mask, mask) ;
     }
 
@@ -520,11 +521,12 @@ atomvmInterruptMask (uint32_t mask)
 * @return None
 */
 void
-atomvmCtrlIntRequest (HATOMVM atomvm, void (*isr) (void))
+atomvmCtrlIntRequest (HATOMVM atomvm, void (*isr) (uint32_t /*vect*/), uint32_t vect)
 {
     PATOMVM         patomvm = (PATOMVM) atomvm ;
 
     WaitForSingleObject (patomvm->atomvm_int_complete, INFINITE) ;
+    InterlockedExchange ((volatile uint32_t *)&patomvm->isr_vect, (uint32_t)vect) ;
     while (InterlockedCompareExchange ((volatile uint32_t *)&patomvm->isr, (uint32_t)isr, 0) != 0) {
 		SwitchToThread() ;
 	}
@@ -815,7 +817,7 @@ atomvmIntWait  (void)
 * @param[in] callback Callback parameter.
 *
 * @return Zero on failure, try to call GetLastError().
-*/
+
 uint32_t
 callbackIntRequest (PATOMVM patomvm, PATOMVM_CALLBACK callback)
 {
@@ -824,7 +826,7 @@ callbackIntRequest (PATOMVM patomvm, PATOMVM_CALLBACK callback)
     int_request->isr () ;
     return 1 ;
 }
-
+*/
 /**
 * \ingroup atomvm
 * \b atomvmIntRequest
@@ -834,7 +836,7 @@ callbackIntRequest (PATOMVM patomvm, PATOMVM_CALLBACK callback)
 * @param[in] isr Function that will be called from the controll thread.
 *
 * @return void.
-*/
+
 void
 atomvmIntRequest  (void (*isr) (void))
 {
@@ -844,7 +846,7 @@ atomvmIntRequest  (void (*isr) (void))
     callback.isr = isr ;
     invokeCallback (patomvm, callbackIntRequest, (PATOMVM_CALLBACK)&callback) ;
 }
-
+*/
 /**
 * \b callbackIntRequest
 *
@@ -870,8 +872,11 @@ callbackSyscallRequest (PATOMVM patomvm, PATOMVM_CALLBACK callback)
 * \b atomvmSyscallRequest
 *
 * This function is to be used by the atom virtual machine.
+* From syscall WIndows APIs can be called.
 *
-* @param[in] isr Function that will be called from the controll thread.
+* @param[in] syscall Function that will be called from the controll thread.
+* @param[in] param1 parameter to syscall.
+* @param[in] param2 parameter to syscall.
 *
 * @return void.
 */

@@ -14,7 +14,7 @@
  *    Atomthreads project may be used to endorse or promote products
  *    derived from this software without specific prior written permission.
  *
- * THIS SOFTWARE IS PROVIDED BY THE ATOMTHREADS PROJECT AND CONTRIBUTORS
+ * THIS SOFTWARE IS PROVIDED BY THE ATOMVM PROJECT AND CONTRIBUTORS
  * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
  * TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
  * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE PROJECT OR CONTRIBUTORS BE
@@ -63,9 +63,6 @@
 #define ATOMVM_ASSERT(x, msg)
 #endif
 
-
-#define ATOMVM_MAX_VM           8
-
 /* Forward declarations */
 
 /* This is an opaque handle to an instance of an atomvm created
@@ -80,7 +77,7 @@ typedef struct ATOMVM_CONTEXT*          HATOMVM_CONTEXT ;
 /* Function prototypes used for controlling the atom virtual machine */
 extern uint32_t         atomvmCtrlCreate (HATOMVM* atomvm) ;
 extern void             atomvmCtrlRun (HATOMVM atomvm, uint32_t flags) ;
-extern void             atomvmCtrlIntRequest (HATOMVM atomvm, void (*isr) (void)) ;
+extern void             atomvmCtrlIntRequest (HATOMVM atomvm, void (*isr) (uint32_t /*vect*/), uint32_t vect) ;
 extern void             atomvmCtrlClose (HATOMVM atomvm) ;
 
 /* Function prototypes for use by the atom virtual machine from within the
@@ -94,7 +91,6 @@ extern void             atomvmContextDesrtroy (HATOMVM_CONTEXT context) ;
 extern void             atomvmWriteThreadId (uint32_t thread_id) ;
 extern uint32_t         atomvmReadThreadId (void) ;
 extern void             atomvmIntWait (void) ;
-extern void             atomvmIntRequest (void (*isr) (void)) ;
 extern uint32_t         atomvmSyscallRequest  (uint32_t (*syscall) (uint32_t, uint32_t), uint32_t param1, uint32_t param2) ;
 extern uint32_t         atomvmGetVmId (void) ;
 
