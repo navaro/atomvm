@@ -7,6 +7,9 @@
 volatile unsigned long  _sys_ticks = 0 ;
 static uint32_t         _thread_stack[EXAMPLE_STACK_SIZE] ;
 
+static HATOMVM_CONTEXT  _hatomvm_context_thread ;
+static HATOMVM_CONTEXT  _hatomvm_context_main ;
+
 void sysTickVector (uint32_t vect)
 {
     _sys_ticks++ ;
@@ -19,18 +22,25 @@ static void Thread(uint32_t arg)
 {
     int logged = 0 ;
 
+    halDbgPrintf ("Example VM in Thread. systicks = %d\r\n", _sys_ticks) ;
+
     /*
      * Just sit in a loop and print a message every now and then.
      */
     while (1) {
         if (!(_sys_ticks % 100)) {
             if (!logged) {
-                halDbgPrintf ("Example VM Tread. systicks = %d\r\n", _sys_ticks) ;
+                halDbgPrintf ("Example VM running in the thread context. systicks = %d\r\n", _sys_ticks) ;
                 logged = 1 ;
             }
         }
         else {
             logged = 0 ;
+        }
+
+        if (_sys_ticks > 500) {
+            /* switch back to main context */
+            atomvmContextSwitch (_hatomvm_context_thread, _hatomvm_context_main) ;
         }
     }
 
@@ -54,16 +64,29 @@ void
 __atomvmReset ()
 #endif
 {
-    HATOMVM_CONTEXT thread ;
-
-    halDbgPrintf ("Example VM startup. systicks = %d\r\n", _sys_ticks) ;
+    halDbgPrintf ("Example VM in main. systicks = %d\r\n", _sys_ticks) ;
 
     /*
-     * Create a "thread" and run it.
+     * Create a "thread" saved in _hatomvm_context_thread and run it. 
+     * We save the main context in _hatomvm_context_main so we can return 
+     * here at a later stage.
      */
-    thread = atomvmContextCreate (0) ;
-    atomvmContextInit (thread, &_thread_stack[EXAMPLE_STACK_SIZE-1], Thread, 0, 0) ;
-    atomvmContextSwitch (0, thread) ;
+    _hatomvm_context_thread = atomvmContextCreate (0) ;
+    _hatomvm_context_main = atomvmContextCreate (0) ;
+    atomvmContextInit (_hatomvm_context_thread, &_thread_stack[EXAMPLE_STACK_SIZE-1], Thread, 0, 0) ;
+
+    atomvmContextSwitch (_hatomvm_context_main, _hatomvm_context_thread) ;
+
+    halDbgPrintf ("Example VM back in main. systicks = %d\r\n", _sys_ticks) ;
+
+    while (1) {
+        if (!(_sys_ticks%100)) {
+            halDbgPrintf ("Example VM masking interrupts... systicks = %d\r\n", _sys_ticks) ;
+            atomvmInterruptMask (1) ;
+            _sys_ticks++; /* since interupts is disabled, this message will never be printed again. */
+        }
+    }
+
 
 #ifndef WIN32
   return 0 ;
